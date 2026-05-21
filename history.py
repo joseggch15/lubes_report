@@ -57,12 +57,20 @@ DT_DOCKET_VOLUME = 8
 
 def _match_delivery_product(text) -> str | None:
     """Mapea el texto de producto de la hoja de transacciones al key del
-    reporte. Devuelve None para productos ajenos al reporte (p.ej. S4CX10W)."""
+    reporte. Devuelve None para productos ajenos al reporte.
+
+    Caso especial: los tickets con producto 'Spirax S4CX10W' se reportan
+    como entregas de 'S4CX30' porque ese tanque almacena el mismo producto
+    (S4CX30) — el W solo indica el tanque, no un lubricante distinto. Esta
+    regla aplica EXCLUSIVAMENTE a la tabla de tickets de entrega; en las
+    hojas Recon, en los Tank Logs y en las tendencias WeeklyVariance,
+    S4CX10W sigue siendo su propio producto.
+    """
     if not text:
         return None
     up = str(text).upper().replace(" ", "")
     if "S4CX10W" in up:
-        return None
+        return "S4CX30"
     if "S4CX30" in up:
         return "S4CX30"
     if "15W40" in up or "RIMULA" in up:

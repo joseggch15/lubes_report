@@ -280,6 +280,10 @@ def _build_history_xlsx(path):
                "D-OUT", None, "Yes", "Gauged", 9999, 9999, 0, 0])
     dt.append(["15W40", datetime.datetime(2026, 5, 9, 9, 0), "Tank 6",
                "D-NO", None, "No", "Gauged", 3000, 3000, 0, 0])
+    # Ticket de S4CX10W: debe contarse como entrega de S4CX30 (mismo producto).
+    dt.append(["Spirax S4CX10W", datetime.datetime(2026, 5, 10, 9, 0),
+               "Tank 1", "D-S4CX10W", None, "Yes", "Gauged",
+               7777, 7000, -777, 0])
 
     # Hojas "WeeklyVariance ..." (tendencia de variance por producto).
     wv_sheets = {
@@ -396,11 +400,15 @@ def test_e2e_delivery_tickets_by_week():
         data = m.default_data()
         history.apply_week_to_data(data, store, datetime.date(2026, 5, 11))
 
-        # Solo el ticket dentro de la semana (07/05) y confirmado.
+        # 2 tickets en la semana: el de S4CX30 del 07/05 y el de S4CX10W del
+        # 10/05 (que debe contarse como S4CX30 porque es el mismo producto).
         s4 = data["deliveries"]["S4CX30"]
-        assert len(s4) == 1, "Debio quedar solo el ticket de la semana"
-        assert s4[0]["date"] == "07/05/2026"
-        assert s4[0]["volume"] == 5000
+        assert len(s4) == 2, "Debian quedar 2 tickets (S4CX30 + S4CX10W)"
+        dates = sorted(t["date"] for t in s4)
+        assert dates == ["07/05/2026", "10/05/2026"]
+        volumes = sorted(t["volume"] for t in s4)
+        assert volumes == [5000, 7777], \
+            "El ticket S4CX10W (vol 7777) debe estar incluido en S4CX30"
         # El ticket de 15W40 estaba 'Confirmed=No' -> se descarta.
         assert data["deliveries"]["15W40"] == []
 
@@ -408,6 +416,9 @@ def test_e2e_delivery_tickets_by_week():
         text = _all_text(Document(out))
         assert "07/05/2026" in text
         assert "9999" not in text and "9.999" not in text   # ticket fuera de semana
+        # El ticket S4CX10W del 10/05 debe figurar dentro de S4CX30:
+        # volume 7777 -> formato '7.777' en el reporte.
+        assert "7.777" in text
         print("OK  test_e2e_delivery_tickets_by_week")
     finally:
         shutil.rmtree(work, ignore_errors=True)
