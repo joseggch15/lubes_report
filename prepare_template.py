@@ -96,6 +96,29 @@ CONSIDERATION_GROUPS = {
     "p4_cons": [114, 115, 116, 117],
 }
 
+# Compactacion de la maquetacion: el reporte original tenia muchos parrafos
+# vacios pensados para acomodar graficos grandes pegados de Excel. Con los
+# graficos generados por el software esos espaciadores dejan huecos
+# enormes (paginas casi en blanco). El usuario los elimina a mano en el
+# reporte final; el software replica esa correccion al producir la plantilla.
+#
+# Cada tupla = (indice del parrafo "ancla", # de parrafos vacios a eliminar
+# inmediatamente despues). Indices son los del reporte original.
+SPACING_FIXES = [
+    (80,  4),   # despues de la leyenda de la Figura 2
+    (103, 4),   # despues de la leyenda de la Figura 3
+    (126, 5),   # despues de la leyenda de la Figura 4
+    (148, 4),   # despues del bullet 'Transfers' del producto 1
+    (171, 6),   # despues del bullet 'Transfers' del producto 2
+    (204, 7),   # despues del bullet 'Transfers' del producto 3
+    (238, 4),   # despues del bullet 'Transfers' del producto 4
+    (269, 5),   # despues de la leyenda de la Figura 10
+    (284, 5),   # despues de la leyenda de la Figura 12
+    (301, 8),   # despues de la leyenda de la Figura 14
+    (321, 6),   # despues de la leyenda de la Figura 16
+    (338, 1),   # despues de la leyenda de la Figura 18
+]
+
 
 def set_paragraph_text(paragraph, text):
     """Borra el contenido del parrafo y lo reemplaza por `text` en Arial
@@ -139,6 +162,40 @@ def retag_period(paragraph):
         return False
     _rewrite_keep_format(paragraph, PERIOD_RE.sub("{{ period_full }}", text))
     return True
+
+
+def _is_empty_paragraph(p_element) -> bool:
+    """True si el parrafo no contiene texto, ni imagenes, ni saltos de pagina."""
+    if p_element.findall(".//" + qn("w:drawing")):
+        return False
+    if p_element.findall(".//" + qn("w:br")):
+        return False
+    for t in p_element.findall(".//" + qn("w:t")):
+        if t.text and t.text.strip():
+            return False
+    return True
+
+
+def remove_empty_paragraphs_after(anchor_paragraph, count: int) -> int:
+    """Elimina hasta `count` parrafos VACIOS consecutivos justo despues del
+    parrafo `anchor_paragraph`. Salta tablas (u otros elementos no-parrafo)
+    sin eliminarlas; si se encuentra un parrafo con contenido, se detiene."""
+    removed = 0
+    el = anchor_paragraph._p
+    while removed < count:
+        nxt = el.getnext()
+        if nxt is None:
+            break
+        if nxt.tag != qn("w:p"):
+            # No es un parrafo (p.ej. tabla, sectPr): saltarlo y seguir.
+            el = nxt
+            continue
+        if not _is_empty_paragraph(nxt):
+            break
+        nxt.getparent().remove(nxt)
+        removed += 1
+        # `el` se mantiene; el siguiente getnext da el nuevo proximo.
+    return removed
 
 
 def retag_textbox_dates(doc):
@@ -258,6 +315,7 @@ def main():
     figure_targets = {idx: paragraphs[idx] for idx in FIGURE_PARAGRAPHS}
     cons_targets = {name: [paragraphs[i] for i in idxs]
                     for name, idxs in CONSIDERATION_GROUPS.items()}
+    spacing_targets = [(paragraphs[i], n) for i, n in SPACING_FIXES]
 
     # 2) Reemplazar parrafos de texto.
     for idx, tag in TEXT_PARAGRAPHS.items():
@@ -297,6 +355,13 @@ def main():
     # 7) Etiquetar la fecha de la portada (vive en cuadros de texto).
     cover = retag_textbox_dates(doc)
     print("Fechas de portada/cuadros de texto etiquetadas: %d." % cover)
+
+    # 8) Compactar la maquetacion: quitar parrafos vacios sobrantes que
+    #    estaban pensados para gráficos grandes pegados de Excel y que con
+    #    los gráficos auto-generados dejaban paginas casi en blanco.
+    total_removed = sum(remove_empty_paragraphs_after(anchor, n)
+                        for anchor, n in spacing_targets)
+    print("Parrafos vacios eliminados (compactacion): %d." % total_removed)
 
     out = os.path.join(os.path.dirname(os.path.abspath(__file__)), OUTPUT_NAME)
     doc.save(out)
