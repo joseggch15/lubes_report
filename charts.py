@@ -45,7 +45,10 @@ def delivery_bar_chart(rows: list, path: str) -> str:
     rows: lista de dicts {date, volume, docket}. Si esta vacia se genera un
     grafico que indica que no hubo entregas confirmadas.
     """
-    fig, ax = plt.subplots(figsize=(6.2, 3.6))
+    # figsize ajustado para que al insertar a 105 mm de ancho la altura
+    # resulte ~63 mm, igual que las imagenes del reporte hecho a mano
+    # (compensa los margenes que matplotlib agrega con bbox_inches='tight').
+    fig, ax = plt.subplots(figsize=(6.0, 3.1))
     ax.set_title("Deliveries", fontsize=12, fontweight="bold")
 
     if not rows:
@@ -76,9 +79,11 @@ def delivery_bar_chart(rows: list, path: str) -> str:
 
 def transaction_pie_chart(equipment, other, transfers, path: str) -> str:
     """Grafico de dona "TRANSACTIONS DISTRIBUTION" (Figuras 5-8)."""
-    fig, ax = plt.subplots(figsize=(5.2, 4.2))
+    # figsize ajustado para que al insertar a 95 mm de ancho la altura sea
+    # ~70 mm, igual que las donas del reporte hecho a mano.
+    fig, ax = plt.subplots(figsize=(5.0, 3.3))
     ax.set_title("TRANSACTIONS DISTRIBUTION", fontsize=12,
-                 fontweight="bold", pad=30)
+                 fontweight="bold", pad=24)
 
     values = [_num(equipment), _num(other), _num(transfers)]
     labels = ["To equipment", "Other Dispenses", "Transfers"]
@@ -115,9 +120,11 @@ def tank_log_chart(points: list, title: str, path: str,
     Replica el estilo del grafico exportado por Excel: titulo gris arriba a
     la izquierda, linea roja de Safe Fill Level, linea azul del volumen.
     """
-    fig, ax = plt.subplots(figsize=(7.8, 3.8))
+    # figsize ajustado para que al insertar a 158 mm de ancho la altura
+    # sea ~65 mm, igual que los Tank Log de los reportes hechos a mano.
+    fig, ax = plt.subplots(figsize=(8.0, 2.6))
     ax.set_title(title, loc="left", fontsize=11, color="#7F7F7F",
-                 pad=12, fontweight="normal")
+                 pad=10, fontweight="normal")
 
     if not points:
         ax.text(0.5, 0.5, "No tank-level data available",
@@ -156,7 +163,9 @@ def recon_trend_chart(points: list, title: str, path: str) -> str:
     points: lista de (date, recon_pct). Replica el grafico
     "Weekly variance change <producto>" de las hojas WeeklyVariance.
     """
-    fig, ax = plt.subplots(figsize=(7.4, 3.2))
+    # figsize ajustado para que al insertar a 150 mm de ancho la altura sea
+    # ~80 mm, igual que los graficos 'Reconciliation' hechos a mano.
+    fig, ax = plt.subplots(figsize=(7.5, 3.5))
     ax.set_title(title, fontsize=12, fontweight="bold")
 
     if not points:

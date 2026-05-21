@@ -96,28 +96,13 @@ CONSIDERATION_GROUPS = {
     "p4_cons": [114, 115, 116, 117],
 }
 
-# Compactacion de la maquetacion: el reporte original tenia muchos parrafos
-# vacios pensados para acomodar graficos grandes pegados de Excel. Con los
-# graficos generados por el software esos espaciadores dejan huecos
-# enormes (paginas casi en blanco). El usuario los elimina a mano en el
-# reporte final; el software replica esa correccion al producir la plantilla.
-#
-# Cada tupla = (indice del parrafo "ancla", # de parrafos vacios a eliminar
-# inmediatamente despues). Indices son los del reporte original.
-SPACING_FIXES = [
-    (80,  4),   # despues de la leyenda de la Figura 2
-    (103, 4),   # despues de la leyenda de la Figura 3
-    (126, 5),   # despues de la leyenda de la Figura 4
-    (148, 4),   # despues del bullet 'Transfers' del producto 1
-    (171, 6),   # despues del bullet 'Transfers' del producto 2
-    (204, 7),   # despues del bullet 'Transfers' del producto 3
-    (238, 4),   # despues del bullet 'Transfers' del producto 4
-    (269, 5),   # despues de la leyenda de la Figura 10
-    (284, 5),   # despues de la leyenda de la Figura 12
-    (301, 8),   # despues de la leyenda de la Figura 14
-    (321, 6),   # despues de la leyenda de la Figura 16
-    (338, 1),   # despues de la leyenda de la Figura 18
-]
+# NOTA: previamente esta lista se usaba para "compactar" la plantilla
+# eliminando parrafos vacios entre secciones. Era un error: los reportes
+# originales hechos a mano (380+ parrafos) usan esos espaciadores con
+# proposito. La solucion correcta es generar los graficos del software con
+# el MISMO tamano que las imagenes pegadas desde Excel; ver charts.py y
+# report_model.figure_width(). Esta lista se mantiene vacia a proposito.
+SPACING_FIXES = []
 
 
 def set_paragraph_text(paragraph, text):

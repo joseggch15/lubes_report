@@ -123,12 +123,24 @@ FIGURE_LABELS = {
     "fig_tasks": "Tabla 6  - Resumen de tareas de la semana (imagen)",
 }
 
-# Ancho con el que se inserta cada figura en el Word (milimetros).
-_WIDE_FIGURES = {"fig5", "fig6", "fig7", "fig8"}  # graficos circulares = mas chicos
+# Ancho con el que se inserta cada figura en el Word. Se eligio para que
+# coincida con el tamano que ocupaban las imagenes pegadas desde Excel en
+# los reportes hechos a mano (medido en M0518: ~104mm las barras de
+# entregas, ~95mm las donas, ~158mm los tank logs, ~150mm los recon trends).
+_DELIVERY_BAR_FIGS = {"fig1", "fig2", "fig3", "fig4"}
+_PIE_FIGS = {"fig5", "fig6", "fig7", "fig8"}
+_RECON_TREND_FIGS = {"fig10", "fig12", "fig14", "fig16", "fig18"}
 
 
 def figure_width(fig_key: str) -> Mm:
-    return Mm(105) if fig_key in _WIDE_FIGURES else Mm(160)
+    if fig_key in _DELIVERY_BAR_FIGS:
+        return Mm(105)
+    if fig_key in _PIE_FIGS:
+        return Mm(95)
+    if fig_key in _RECON_TREND_FIGS:
+        return Mm(150)
+    # Tank logs (fig9, 11, 13, 15, 17) y fig_tasks.
+    return Mm(158)
 
 
 # --------------------------------------------------------------------------
