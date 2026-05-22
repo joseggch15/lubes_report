@@ -21,13 +21,13 @@ import os
 import sys
 import traceback
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QGroupBox, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
-    QPushButton, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QProgressDialog, QPushButton, QScrollArea, QTabWidget, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 import report_model as m
@@ -75,6 +75,13 @@ QComboBox, QLineEdit, QPlainTextEdit {{
     border-radius: 5px; padding: 4px;
 }}
 QLabel#title {{ font-size: 16px; font-weight: bold; color: {PRIMARY}; }}
+QProgressDialog {{ background: white; }}
+QProgressDialog QLabel {{ color: {PRIMARY}; font-weight: bold; }}
+QProgressBar {{
+    background: #E3E9F0; border: 1px solid #C9D3DF;
+    border-radius: 4px; text-align: center; min-height: 16px;
+}}
+QProgressBar::chunk {{ background: {PRIMARY}; border-radius: 3px; }}
 """
 
 
@@ -87,6 +94,72 @@ def kpi_card(title: str, value: str, color: str) -> QLabel:
         f"QLabel {{ background: white; border: 2px solid {color}; "
         f"border-radius: 8px; padding: 8px 16px; color: {color}; }}")
     return lbl
+
+
+# ----------------------------------------------------------------------
+# Utilidad: ejecutar una operacion lenta con barra de progreso
+# ----------------------------------------------------------------------
+
+class _BackgroundWorker(QThread):
+    """QThread que ejecuta una funcion arbitraria y guarda su resultado /
+    excepcion en un contenedor compartido.
+
+    Se usa para mover operaciones lentas (lectura de Excel/CSV grandes,
+    generacion del reporte) fuera del hilo de la GUI, asi la ventana
+    sigue respondiendo y se puede mostrar una barra de progreso.
+    """
+
+    def __init__(self, func, args=(), kwargs=None, holder=None):
+        super().__init__()
+        self._func = func
+        self._args = args
+        self._kwargs = kwargs or {}
+        self._holder = holder if holder is not None else {}
+
+    def run(self):
+        try:
+            self._holder["result"] = self._func(*self._args, **self._kwargs)
+        except BaseException as exc:           # noqa: BLE001
+            self._holder["error"] = exc
+
+
+def _run_with_progress(parent, title: str, message: str,
+                        func, *args, **kwargs):
+    """Ejecuta `func(*args, **kwargs)` en un hilo aparte y mientras tanto
+    muestra una barra de progreso indeterminada (animada) modal.
+
+    - El usuario ve que la app esta trabajando (no parece colgada).
+    - La ventana principal queda bloqueada hasta que termine la tarea.
+    - Si `func` lanza una excepcion, se relanza desde aqui.
+    """
+    holder: dict = {"result": None, "error": None}
+    worker = _BackgroundWorker(func, args, kwargs, holder)
+
+    dlg = QProgressDialog(message, None, 0, 0, parent)
+    dlg.setWindowTitle(title)
+    dlg.setWindowModality(Qt.ApplicationModal)
+    dlg.setMinimumDuration(0)           # mostrar de inmediato
+    dlg.setAutoClose(False)
+    dlg.setAutoReset(False)
+    dlg.setCancelButton(None)           # no permitir cancelar
+    # Quitar el boton de cierre de la barra de titulo para que el usuario
+    # no la pueda cerrar a la fuerza durante la carga.
+    dlg.setWindowFlags(
+        (dlg.windowFlags() | Qt.CustomizeWindowHint)
+        & ~Qt.WindowCloseButtonHint
+        & ~Qt.WindowContextHelpButtonHint)
+    dlg.setMinimumWidth(380)
+
+    # Cuando el worker termina, cerramos el dialogo (dlg.exec() retorna).
+    worker.finished.connect(dlg.close)
+
+    worker.start()
+    dlg.exec()
+    worker.wait()                       # asegurar limpieza del hilo
+
+    if holder["error"] is not None:
+        raise holder["error"]
+    return holder["result"]
 
 
 class MainWindow(QMainWindow):
@@ -492,7 +565,12 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            self.history.load(path)
+            _run_with_progress(
+                self,
+                "Cargando Excel historico",
+                "Leyendo  %s ...\n\nPor favor espere, este archivo puede ser "
+                "grande." % os.path.basename(path),
+                self.history.load, path)
         except Exception as exc:
             QMessageBox.critical(self, "Error",
                                  "No se pudo leer el Excel historico:\n%s" % exc)
@@ -521,7 +599,11 @@ class MainWindow(QMainWindow):
             return
         latest = max(candidates, key=os.path.getmtime)
         try:
-            trends, safe = stock_trend.load_tank_trends(latest)
+            trends, safe = _run_with_progress(
+                self,
+                "Cargando tendencia de tanques",
+                "Leyendo CSV %s ..." % os.path.basename(latest),
+                stock_trend.load_tank_trends, latest)
         except Exception:
             return
         if not trends:
@@ -538,7 +620,11 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            trends, safe = stock_trend.load_tank_trends(path)
+            trends, safe = _run_with_progress(
+                self,
+                "Cargando tendencia de tanques",
+                "Leyendo CSV %s ..." % os.path.basename(path),
+                stock_trend.load_tank_trends, path)
         except Exception as exc:
             QMessageBox.critical(self, "Error",
                                  "No se pudo leer el CSV:\n%s" % exc)
@@ -637,7 +723,11 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            self.data = m.load_excel(path)
+            self.data = _run_with_progress(
+                self,
+                "Cargando Excel de entrada",
+                "Leyendo  %s ..." % os.path.basename(path),
+                m.load_excel, path)
             self._refresh_all_from_data()
             self.statusBar().showMessage("Datos cargados desde %s"
                                          % os.path.basename(path))
@@ -721,7 +811,12 @@ class MainWindow(QMainWindow):
             data = self._collect_all()
             images = {fig: self.image_edits[fig].text().strip()
                       for fig in m.FIGURE_KEYS}
-            m.generate_report(data, images, self.template_path, out)
+            _run_with_progress(
+                self,
+                "Generando reporte",
+                "Generando graficos y armando el documento Word ...\n\n"
+                "Esto puede tardar varios segundos.",
+                m.generate_report, data, images, self.template_path, out)
             QMessageBox.information(self, "Reporte generado",
                                     "Reporte creado correctamente:\n%s" % out)
             self.statusBar().showMessage("Reporte generado: %s" % out)
