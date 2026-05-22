@@ -163,42 +163,75 @@ class HistoryStore:
             tank_filter = PRODUCT_TANK_FILTER.get(product_key)
             if sheet_name is not None:
                 ws = wb[sheet_name]
+                # 1) Agrupar TODAS las filas por fecha.  Hace falta hacer dos
+                # pasadas para soportar productos donde el tank_filter (ej.
+                # "Tank 21" en S4CX30) es una FILA RESUMEN formulada como
+                # =C_other+C_other.  Esas formulas pierden su valor cacheado
+                # apenas openpyxl guarda el archivo (no tiene motor de
+                # formulas), asi que necesitamos un fallback: si Tank 21
+                # esta vacio, sumamos las otras filas del mismo dia.
+                rows_by_day: dict = {}
                 for row in ws.iter_rows(min_row=3, values_only=True):
                     raw_date = row[COL_DATE] if row else None
                     if not isinstance(raw_date, datetime.datetime):
                         continue
-                    day = raw_date.date()
+                    rows_by_day.setdefault(raw_date.date(), []).append(row)
+
+                # 2) Procesar cada fecha.
+                tf_lower = (tank_filter.strip().lower()
+                            if tank_filter else None)
+                for day, rows in rows_by_day.items():
                     rec = week_map.setdefault(day, WeekRecord())
-                    # Una fila "vacia" (solo fecha) no aporta datos.
-                    if row[COL_OPENING] is None and row[COL_CLOSING] is None:
-                        continue
-                    # Productos con varios tanques: solo se toma el indicado.
-                    if tank_filter is not None:
-                        site = row[COL_SITE]
-                        if (site is None or str(site).strip().lower()
-                                != tank_filter.strip().lower()):
+
+                    if tf_lower is None:
+                        # Sin filtro: sumar todas las filas con datos.
+                        rows_to_use = rows
+                    else:
+                        # Producto con tank_filter (ej. S4CX30 -> Tank 21).
+                        target_rows = []
+                        other_rows = []
+                        for r in rows:
+                            site = r[COL_SITE]
+                            if (site is not None
+                                    and str(site).strip().lower() == tf_lower):
+                                target_rows.append(r)
+                            elif site is not None:
+                                other_rows.append(r)
+                        # Si la fila Tank 21 tiene valores cacheados, usarla.
+                        target_has_data = any(
+                            (r[COL_OPENING] is not None
+                             or r[COL_CLOSING] is not None)
+                            for r in target_rows)
+                        if target_has_data:
+                            rows_to_use = target_rows
+                        else:
+                            # Fallback: la fila resumen esta sin cache; sumamos
+                            # las otras filas del mismo dia (Tank 2 + Tank 1).
+                            rows_to_use = other_rows
+
+                    for row in rows_to_use:
+                        # Saltar filas totalmente vacias.
+                        if (row[COL_OPENING] is None
+                                and row[COL_CLOSING] is None):
                             continue
-                    rec.found = True
-                    rec.opening += m._num(row[COL_OPENING])
-                    rec.deliveries += m._num(row[COL_DELIVERIES])
-                    # Transactions en el Excel es la formula =SUM(L:N). Si
-                    # esa celda no tiene valor cacheado (caso comun cuando
-                    # el archivo no se guardo desde Excel, o cuando openpyxl
-                    # escribio la formula sin computarla), data_only=True
-                    # devuelve None. En ese caso, computamos en runtime el
-                    # mismo SUM(L,M,N).
-                    raw_trans = row[COL_TRANSACTIONS]
-                    if raw_trans is None:
-                        raw_trans = (m._num(row[COL_TO_EQUIPMENT])
-                                     + m._num(row[COL_OTHER])
-                                     + m._num(row[COL_TRANSFERS]))
-                    rec.transactions += m._num(raw_trans)
-                    rec.closing += m._num(row[COL_CLOSING])
-                    rec.to_equipment += m._num(row[COL_TO_EQUIPMENT])
-                    rec.other += m._num(row[COL_OTHER])
-                    rec.transfers += m._num(row[COL_TRANSFERS])
-                    if row[COL_SITE]:
-                        rec.tanks.append(str(row[COL_SITE]))
+                        rec.found = True
+                        rec.opening += m._num(row[COL_OPENING])
+                        rec.deliveries += m._num(row[COL_DELIVERIES])
+                        # Transactions = formula =SUM(L:N).  Si openpyxl
+                        # devuelve None (formula sin cache), computamos
+                        # L+M+N en runtime.
+                        raw_trans = row[COL_TRANSACTIONS]
+                        if raw_trans is None:
+                            raw_trans = (m._num(row[COL_TO_EQUIPMENT])
+                                         + m._num(row[COL_OTHER])
+                                         + m._num(row[COL_TRANSFERS]))
+                        rec.transactions += m._num(raw_trans)
+                        rec.closing += m._num(row[COL_CLOSING])
+                        rec.to_equipment += m._num(row[COL_TO_EQUIPMENT])
+                        rec.other += m._num(row[COL_OTHER])
+                        rec.transfers += m._num(row[COL_TRANSFERS])
+                        if row[COL_SITE]:
+                            rec.tanks.append(str(row[COL_SITE]))
             self._by_product[product_key] = week_map
 
         # Tickets de entrega (hoja "delivery_transaction_...").
