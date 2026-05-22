@@ -29,8 +29,10 @@ except ImportError:
 
 # Cada clave es un product_key del reporte; los valores son fragmentos que,
 # al encontrarse en el nombre del producto (en mayusculas, sin espacios),
-# identifican al producto.
+# identifican al producto. El orden importa: S4CX10W esta ANTES que S4CX30
+# para chequearse primero (es la version mas especifica).
 _PRODUCT_PATTERNS: dict[str, list[str]] = {
+    "S4CX10W":      ["S4CX10W"],
     "S4CX30":       ["S4CX30"],
     "15W40":        ["15W40", "RIMULA"],
     "S5CFDM60":     ["S5CFDM60"],
@@ -58,16 +60,16 @@ def _parse_number(text: str) -> float:
 def _match_product(name: str) -> str | None:
     """Asocia un nombre de producto del PDF a la clave del reporte.
 
-    Devuelve la clave (ej. '15W40') o None si no se reconoce.
-    No debe confundir S4CX10W con S4CX30: S4CX10W NO contiene 'S4CX30'.
+    Devuelve la clave (ej. '15W40', 'S4CX10W') o None si no se reconoce.
+
+    Importante: S4CX10W va PRIMERO en _PRODUCT_PATTERNS para que se
+    detecte como 'S4CX10W' (y no como 'S4CX30') aunque ambas claves
+    compartan el prefijo 'S4CX'. 'S4CX10W' no contiene 'S4CX30' como
+    substring, pero el orden de chequeo asegura el match correcto.
     """
     if not name:
         return None
     up = name.upper().replace(" ", "")
-    # S4CX10W no es un producto del reporte consolidado; evitar falso
-    # positivo si alguien busca 'S4CX30' dentro de 'S4CX10W'.
-    if "S4CX10W" in up:
-        return None
     for key, fragments in _PRODUCT_PATTERNS.items():
         for frag in fragments:
             if frag in up:
@@ -81,14 +83,18 @@ def _match_product(name: str) -> str | None:
 
 # Fila de la tabla Product Summary.  Formato esperado:
 #   <error%>  <product>  <opening> L  <closing> L  <inflow> L  <outflow> L  <error> L
+#
+# Importante: el porcentaje y el error pueden ser NEGATIVOS (ej. cuando
+# Outflow > Inflow + Stock change).  El regex acepta el signo '-' opcional
+# tanto al inicio del % como al inicio de cada valor en litros.
 _RE_SUMMARY_ROW = re.compile(
-    r'[\d.]+%\s+'              # Error As % Of Outflow
-    r'(.+?)\s+'                # Product name (non-greedy)
-    r'([\d,]+\.?\d*)\s*L\s+'   # Opening Stock
-    r'([\d,]+\.?\d*)\s*L\s+'   # Closing Stock
-    r'([\d,]+\.?\d*)\s*L\s+'   # Inflow
-    r'([\d,]+\.?\d*)\s*L\s+'   # Outflow
-    r'([\d,]+\.?\d*)\s*L'      # Error
+    r'-?[\d.]+%\s+'                # Error As % Of Outflow (puede ser negativo)
+    r'(.+?)\s+'                    # Product name (non-greedy)
+    r'(-?[\d,]+\.?\d*)\s*L\s+'     # Opening Stock
+    r'(-?[\d,]+\.?\d*)\s*L\s+'     # Closing Stock
+    r'(-?[\d,]+\.?\d*)\s*L\s+'     # Inflow
+    r'(-?[\d,]+\.?\d*)\s*L\s+'     # Outflow
+    r'(-?[\d,]+\.?\d*)\s*L'        # Error
 )
 
 # Periodo: dd/mm/yyyy HH:MM - dd/mm/yyyy HH:MM
@@ -101,9 +107,10 @@ _RE_PERIOD = re.compile(
 _RE_TITLE = re.compile(r'Detailed Reconciliation\s+(.+)')
 
 # Campos de dispensing en las secciones de tanque (pagina 2+).
-_RE_TO_EQUIPMENT   = re.compile(r'To Equipment\s+([\d,]+\.?\d*)\s*L')
-_RE_OTHER_DISPENSES = re.compile(r'Other Dispenses\s+([\d,]+\.?\d*)\s*L')
-_RE_TRANSFERS_OUT  = re.compile(r'Transfers out\s+([\d,]+\.?\d*)\s*L')
+# Tambien permiten valores negativos por consistencia (raro pero posible).
+_RE_TO_EQUIPMENT   = re.compile(r'To Equipment\s+(-?[\d,]+\.?\d*)\s*L')
+_RE_OTHER_DISPENSES = re.compile(r'Other Dispenses\s+(-?[\d,]+\.?\d*)\s*L')
+_RE_TRANSFERS_OUT  = re.compile(r'Transfers out\s+(-?[\d,]+\.?\d*)\s*L')
 
 
 # -----------------------------------------------------------------------

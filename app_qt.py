@@ -834,6 +834,18 @@ class MainWindow(QMainWindow):
                         period_end_date.strftime("%d/%m/%Y"))
                     if pidx >= 0:
                         self.product_date_combo.setCurrentIndex(pidx)
+
+                # Auto-aplicar los datos historicos sobre la estructura.
+                # Importante para S4CX30: el PDF aporta SOLO Tank 2; en
+                # el Excel ahora tambien existe Tank1 (S4CX10W).  Al
+                # re-aplicar, la tabla consolidada se rellena con la
+                # AGREGACION (Tank 2 + Tank 1) que es lo que el reporte
+                # final necesita.
+                try:
+                    history.apply_week_to_data(
+                        self.data, self.history, period_end_date)
+                except Exception:
+                    pass
             except Exception:
                 pass
 

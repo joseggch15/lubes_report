@@ -43,6 +43,24 @@ _COL_OTHER = 13        # M
 _COL_TRANSFERS = 14    # N
 
 
+# Mapeo explicito (clave_PDF -> selector_hoja, tank_target).
+#   selector_hoja: lo que se le pasa a history._match_sheet() para encontrar
+#                  la hoja correcta. Para S4CX10W usamos 'S4CX30' porque
+#                  los datos viven en la MISMA hoja 'Recon Spirax S4CX30'.
+#   tank_target:   valor que ira en la columna B (Site).
+#                  Nota: en el Excel del usuario aparece 'Tank1' SIN
+#                  espacio para S4CX10W y 'Tank 2' / 'Tank 6' / ... CON
+#                  espacio para los demas.  La fila Tank 21 es la fila
+#                  resumen (formulas =Tank2+Tank1), no se toca.
+PDF_TARGET = {
+    "S4CX30":       {"sheet_key": "S4CX30",       "tank": "Tank 2"},
+    "S4CX10W":      {"sheet_key": "S4CX30",       "tank": "Tank1"},
+    "15W40":        {"sheet_key": "15W40",        "tank": "Tank 6"},
+    "S5CFDM60":     {"sheet_key": "S5CFDM60",     "tank": "Tank 4"},
+    "Tellus S3M46": {"sheet_key": "Tellus S3M46", "tank": "Tank 9"},
+}
+
+
 def _last_data_row(ws) -> int:
     """Numero de la ultima fila con fecha valida en la columna A."""
     last = 2  # filas 1-2 son encabezados
@@ -88,12 +106,28 @@ def _last_row_for_tank(ws, tank_name: str | None) -> int | None:
     return last
 
 
-def _resolve_tank_name(ws, product_key: str) -> str:
-    """Decide el valor de la columna 'Site' (Tank) para una nueva fila.
+def _resolve_sheet(wb, product_key: str) -> str | None:
+    """Devuelve el nombre de la hoja Recon en la que vive este producto.
 
-    Prioriza el filtro PRODUCT_TANK_FILTER (para S4CX30 = 'Tank 21').
-    Si no, hereda el tanque de la fila mas reciente de la hoja.
+    Para S4CX10W devuelve 'Recon Spirax S4CX30' porque los dos tanques
+    (Tank 2 = S4CX30, Tank1 = S4CX10W) viven en la misma hoja.
     """
+    target = PDF_TARGET.get(product_key)
+    sheet_key = target["sheet_key"] if target else product_key
+    return history._match_sheet(sheet_key, wb.sheetnames)
+
+
+def _resolve_tank_name(ws, product_key: str) -> str:
+    """Decide el valor de la columna 'Site' (Tank) para la fila a escribir.
+
+    Orden de prioridad:
+      1. PDF_TARGET[product_key]['tank']  (mapeo explicito por producto)
+      2. PRODUCT_TANK_FILTER  (fallback legacy)
+      3. Tanque heredado de la fila mas reciente de la hoja
+    """
+    target = PDF_TARGET.get(product_key)
+    if target and target.get("tank"):
+        return target["tank"]
     forced = history.PRODUCT_TANK_FILTER.get(product_key)
     if forced:
         return forced
@@ -190,7 +224,7 @@ def write_pdf_data(excel_path: str, product_key: str,
     }
     """
     wb = openpyxl.load_workbook(excel_path)
-    sheet_name = history._match_sheet(product_key, wb.sheetnames)
+    sheet_name = _resolve_sheet(wb, product_key)
     if sheet_name is None:
         return {"sheet": None, "row": None, "action": "no_sheet", "tank": ""}
 
@@ -258,7 +292,7 @@ def write_multiple(excel_path: str, items: list) -> tuple:
 
     for product_key, period_end, info in items:
         try:
-            sheet_name = history._match_sheet(product_key, wb.sheetnames)
+            sheet_name = _resolve_sheet(wb, product_key)
             if sheet_name is None:
                 results.append((product_key, {
                     "sheet": None, "row": None,
