@@ -61,6 +61,16 @@ PDF_TARGET = {
 }
 
 
+# Hojas que tienen una FILA RESUMEN (suma de los otros tanques).
+# Cuando escribimos datos en una de estas hojas, despues de escribir los
+# tanques 'fuente' se crea/actualiza automaticamente la fila resumen con
+# la suma — asi el Excel queda igual a como lo manejaba antes el usuario
+# (Tank 21 = Tank 2 + Tank 1 para S4CX30).
+SHEET_SUMMARY_TANK = {
+    "Recon Spirax S4CX30": "Tank 21",
+}
+
+
 def _last_data_row(ws) -> int:
     """Numero de la ultima fila con fecha valida en la columna A."""
     last = 2  # filas 1-2 son encabezados
@@ -274,6 +284,119 @@ def write_pdf_data(excel_path: str, product_key: str,
             "tank": tank_name}
 
 
+def _upsert_summary_row(ws, day: datetime.date,
+                         summary_tank: str) -> tuple | None:
+    """Crea o actualiza la fila resumen (ej. Tank 21) sumando las otras
+    filas del mismo dia (Tank 2 + Tank 1).
+
+    Si no hay filas fuente para ese dia, devuelve None. Si actualiza una
+    fila existente, devuelve ('updated', row). Si crea una nueva la
+    inserta justo despues de la ultima fila fuente del mismo dia y
+    devuelve ('inserted', row).
+    """
+    # 1) Recolectar todas las filas del dia.
+    source_rows = []
+    summary_row = None
+    summary_norm = summary_tank.strip().lower()
+    for r in range(3, ws.max_row + 1):
+        cell_date = ws.cell(row=r, column=_COL_DATE).value
+        if not isinstance(cell_date, datetime.datetime):
+            continue
+        if cell_date.date() != day:
+            continue
+        site = ws.cell(row=r, column=_COL_SITE).value
+        if not site:
+            continue
+        if str(site).strip().lower() == summary_norm:
+            summary_row = r
+        else:
+            source_rows.append(r)
+
+    if not source_rows:
+        return None
+
+    # 2) Sumar columnas C, D, H, L, M, N.  Para celdas con formula sin
+    # valor cacheado, asumimos 0 (no podemos calcular sin motor de
+    # formulas), pero como acabamos de escribir las filas fuente con
+    # valores literales, deberian estar todas computadas.
+    def _sum(col):
+        total = 0.0
+        for r in source_rows:
+            v = ws.cell(row=r, column=col).value
+            if isinstance(v, (int, float)):
+                total += v
+        return total
+
+    opening = _sum(_COL_OPENING)
+    deliveries = _sum(_COL_DELIVERIES)
+    closing = _sum(_COL_CLOSING)
+    to_eq = _sum(_COL_TO_EQUIPMENT)
+    other = _sum(_COL_OTHER)
+    transfers = _sum(_COL_TRANSFERS)
+    transactions = to_eq + other + transfers
+    calc_stock = opening + deliveries - transactions
+    net_change = closing - opening
+    variance = closing - calc_stock
+    pct = (variance / transactions) if transactions else 0.0
+
+    # 3) Determinar si crear o actualizar.
+    if summary_row is not None:
+        target_row = summary_row
+        action = "updated"
+    else:
+        # Insertar justo despues de la ultima fila fuente del dia.
+        # Si esa posicion es la ultima de la hoja, no hace falta shift.
+        insert_after = max(source_rows)
+        last_data = _last_data_row(ws)
+        if insert_after >= last_data:
+            # Append al final, sin shift.
+            target_row = insert_after + 1
+            # Clonar estilos/formulas de una fila resumen previa si hay.
+            template_row = None
+            for r in range(insert_after, 2, -1):
+                site = ws.cell(row=r, column=_COL_SITE).value
+                if (site
+                        and str(site).strip().lower() == summary_norm
+                        and r != target_row):
+                    template_row = r
+                    break
+            if template_row is None:
+                template_row = insert_after  # fallback
+            _copy_row_template(ws, template_row, target_row)
+        else:
+            # Insertar fila en el medio, shifting todo lo de abajo.
+            target_row = insert_after + 1
+            ws.insert_rows(target_row)
+            # Buscar una fila resumen previa para clonar estilos.
+            template_row = None
+            for r in range(target_row - 1, 2, -1):
+                site = ws.cell(row=r, column=_COL_SITE).value
+                if site and str(site).strip().lower() == summary_norm:
+                    template_row = r
+                    break
+            if template_row is not None:
+                _copy_row_template(ws, template_row, target_row)
+        action = "inserted"
+
+    # 4) Escribir los valores agregados.
+    ws.cell(row=target_row, column=_COL_DATE,
+            value=datetime.datetime.combine(day, datetime.time()))
+    ws.cell(row=target_row, column=_COL_SITE, value=summary_tank)
+    ws.cell(row=target_row, column=_COL_OPENING, value=opening)
+    ws.cell(row=target_row, column=_COL_DELIVERIES, value=deliveries)
+    ws.cell(row=target_row, column=_COL_TRANSACTIONS, value=transactions)
+    ws.cell(row=target_row, column=_COL_CALC_STOCK, value=calc_stock)
+    ws.cell(row=target_row, column=_COL_NET_CHANGE, value=net_change)
+    ws.cell(row=target_row, column=_COL_CLOSING, value=closing)
+    ws.cell(row=target_row, column=_COL_VARIANCE, value=variance)
+    ws.cell(row=target_row, column=_COL_PCT, value=pct)
+    ws.cell(row=target_row, column=_COL_TO_EQUIPMENT, value=to_eq)
+    ws.cell(row=target_row, column=_COL_OTHER, value=other)
+    ws.cell(row=target_row, column=_COL_TRANSFERS, value=transfers)
+
+    return action, target_row
+
+
 def write_multiple(excel_path: str, items: list) -> tuple:
     """Escribe varios PDFs al Excel en una sola pasada.
 
@@ -289,6 +412,9 @@ def write_multiple(excel_path: str, items: list) -> tuple:
         wb = openpyxl.load_workbook(excel_path)
     except Exception as exc:
         return [], [("(workbook)", str(exc))]
+
+    # Hojas + dias que requieren recalcular su fila resumen al final.
+    summary_targets: set = set()
 
     for product_key, period_end, info in items:
         try:
@@ -345,8 +471,29 @@ def write_multiple(excel_path: str, items: list) -> tuple:
             results.append((product_key, {
                 "sheet": sheet_name, "row": target_row,
                 "action": action, "tank": tank_name}))
+
+            # Si esta hoja tiene fila resumen (Tank 21 para S4CX30),
+            # apuntarla para recalcular al final.
+            if sheet_name in SHEET_SUMMARY_TANK:
+                summary_targets.add((sheet_name, period_end))
         except Exception as exc:
             errors.append((product_key, str(exc)))
+
+    # Crear / actualizar filas resumen (ej. Tank 21 = Tank 2 + Tank 1).
+    # Se hace DESPUES de escribir todas las filas fuente para sumar los
+    # ultimos valores.
+    for sheet_name, day in summary_targets:
+        try:
+            summary_tank = SHEET_SUMMARY_TANK[sheet_name]
+            ws = wb[sheet_name]
+            res = _upsert_summary_row(ws, day, summary_tank)
+            if res is not None:
+                action, row = res
+                results.append(("(summary)", {
+                    "sheet": sheet_name, "row": row,
+                    "action": action, "tank": summary_tank}))
+        except Exception as exc:
+            errors.append(("(summary %s)" % sheet_name, str(exc)))
 
     # Guardar todos los cambios al final.
     try:
