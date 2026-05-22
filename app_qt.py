@@ -22,12 +22,12 @@ import sys
 import traceback
 
 from PySide6.QtCore import Qt, QThread
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QGroupBox, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit,
-    QProgressDialog, QPushButton, QScrollArea, QTabWidget, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QProgressDialog, QPushButton, QScrollArea, QStyleFactory, QTabWidget,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 import report_model as m
@@ -42,38 +42,71 @@ PRIMARY = "#1F4E78"
 ACCENT = "#2E7D32"
 DANGER = "#C62828"
 BG = "#F4F6F9"
+TEXT = "#202124"        # texto principal (gris muy oscuro, casi negro)
+TEXT_MUTED = "#5F6368"  # texto secundario
 
+# IMPORTANTE: En Windows 11 con tema oscuro del sistema, Qt heredaria texto
+# blanco/claro sobre fondo blanco, dejando los campos ilegibles. Por eso a
+# cada control que muestra texto se le fuerza un 'color' explicito.
 STYLESHEET = f"""
-QMainWindow, QWidget {{ background: {BG}; }}
+QMainWindow, QWidget {{ background: {BG}; color: {TEXT}; }}
 QGroupBox {{
     font-weight: bold; color: {PRIMARY};
     border: 1px solid #C9D3DF; border-radius: 8px;
     margin-top: 14px; padding: 10px;
 }}
-QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; }}
+QGroupBox::title {{
+    subcontrol-origin: margin; left: 12px; padding: 0 4px;
+    color: {PRIMARY};
+}}
+QLabel {{ color: {TEXT}; background: transparent; }}
+QStatusBar {{ color: {TEXT}; background: {BG}; }}
+QStatusBar QLabel {{ color: {TEXT}; }}
 QPushButton {{
     background: {PRIMARY}; color: white; border: none;
     border-radius: 6px; padding: 7px 14px; font-weight: bold;
 }}
-QPushButton:hover {{ background: #2A5F92; }}
-QPushButton:disabled {{ background: #9AA8B8; }}
-QPushButton#accent {{ background: {ACCENT}; }}
-QPushButton#accent:hover {{ background: #388E3C; }}
-QTabWidget::pane {{ border: 1px solid #C9D3DF; border-radius: 6px; background: white; }}
+QPushButton:hover {{ background: #2A5F92; color: white; }}
+QPushButton:disabled {{ background: #9AA8B8; color: #ECECEC; }}
+QPushButton#accent {{ background: {ACCENT}; color: white; }}
+QPushButton#accent:hover {{ background: #388E3C; color: white; }}
+QTabWidget::pane {{
+    border: 1px solid #C9D3DF; border-radius: 6px; background: white;
+}}
 QTabBar::tab {{
-    background: #E3E9F0; padding: 8px 16px; margin-right: 2px;
+    background: #E3E9F0; color: {TEXT};
+    padding: 8px 16px; margin-right: 2px;
     border-top-left-radius: 6px; border-top-right-radius: 6px;
 }}
 QTabBar::tab:selected {{ background: white; color: {PRIMARY}; font-weight: bold; }}
-QTableWidget {{ background: white; gridline-color: #DCE3EB; }}
+QTabBar::tab:hover {{ background: #D6DEE8; color: {TEXT}; }}
+QTableWidget {{
+    background: white; color: {TEXT}; gridline-color: #DCE3EB;
+    selection-background-color: #CFE3F5; selection-color: {TEXT};
+}}
+QTableWidget::item {{ color: {TEXT}; }}
 QHeaderView::section {{
     background: {PRIMARY}; color: white; padding: 6px; border: none;
     font-weight: bold;
 }}
 QComboBox, QLineEdit, QPlainTextEdit {{
-    background: white; border: 1px solid #C9D3DF;
-    border-radius: 5px; padding: 4px;
+    background: white; color: {TEXT};
+    border: 1px solid #C9D3DF; border-radius: 5px; padding: 4px;
+    selection-background-color: #CFE3F5; selection-color: {TEXT};
 }}
+QComboBox:disabled, QLineEdit:disabled, QPlainTextEdit:disabled {{
+    background: #ECEEF1; color: {TEXT_MUTED};
+}}
+QComboBox QAbstractItemView {{
+    background: white; color: {TEXT};
+    selection-background-color: #CFE3F5; selection-color: {TEXT};
+    border: 1px solid #C9D3DF;
+}}
+QComboBox::drop-down {{ border: none; width: 18px; }}
+QScrollArea {{ background: {BG}; border: none; }}
+QMessageBox {{ background: {BG}; color: {TEXT}; }}
+QMessageBox QLabel {{ color: {TEXT}; }}
+QToolTip {{ background: #FFFFE1; color: {TEXT}; border: 1px solid #C9D3DF; }}
 QLabel#title {{ font-size: 16px; font-weight: bold; color: {PRIMARY}; }}
 QProgressDialog {{ background: white; }}
 QProgressDialog QLabel {{ color: {PRIMARY}; font-weight: bold; }}
@@ -83,6 +116,42 @@ QProgressBar {{
 }}
 QProgressBar::chunk {{ background: {PRIMARY}; border-radius: 3px; }}
 """
+
+
+def _apply_light_palette(app: QApplication) -> None:
+    """Fuerza el estilo Fusion y una paleta clara, sin importar el tema del
+    sistema operativo (clave en Windows 11 con modo oscuro: si no se hace,
+    Qt hereda texto blanco para QLabel/QLineEdit dejando los campos
+    ilegibles)."""
+    if "Fusion" in QStyleFactory.keys():
+        app.setStyle("Fusion")
+
+    pal = QPalette()
+    bg = QColor(BG)
+    base = QColor("white")
+    text = QColor(TEXT)
+    disabled = QColor(TEXT_MUTED)
+
+    pal.setColor(QPalette.Window, bg)
+    pal.setColor(QPalette.WindowText, text)
+    pal.setColor(QPalette.Base, base)
+    pal.setColor(QPalette.AlternateBase, QColor("#F0F3F7"))
+    pal.setColor(QPalette.Text, text)
+    pal.setColor(QPalette.Button, QColor(PRIMARY))
+    pal.setColor(QPalette.ButtonText, QColor("white"))
+    pal.setColor(QPalette.BrightText, QColor("white"))
+    pal.setColor(QPalette.ToolTipBase, QColor("#FFFFE1"))
+    pal.setColor(QPalette.ToolTipText, text)
+    pal.setColor(QPalette.Highlight, QColor("#CFE3F5"))
+    pal.setColor(QPalette.HighlightedText, text)
+    pal.setColor(QPalette.PlaceholderText, disabled)
+
+    # Estado deshabilitado: que no se vea blanco-sobre-blanco.
+    pal.setColor(QPalette.Disabled, QPalette.WindowText, disabled)
+    pal.setColor(QPalette.Disabled, QPalette.Text, disabled)
+    pal.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#ECECEC"))
+
+    app.setPalette(pal)
 
 
 def kpi_card(title: str, value: str, color: str) -> QLabel:
@@ -427,12 +496,14 @@ class MainWindow(QMainWindow):
         for i, row in enumerate(self.data["consolidated"]):
             item0 = QTableWidgetItem(str(row["site"]))
             item0.setFlags(item0.flags() & ~Qt.ItemIsEditable)
-            item0.setBackground(Qt.lightGray)
+            item0.setBackground(QColor("#E3E9F0"))
+            item0.setForeground(QColor(TEXT))
             self.tbl_cons.setItem(i, 0, item0)
             for col, key in enumerate(
                     ["opening", "deliveries", "transactions", "closing"], 1):
-                self.tbl_cons.setItem(
-                    i, col, QTableWidgetItem(self._fmt_num(row[key])))
+                it = QTableWidgetItem(self._fmt_num(row[key]))
+                it.setForeground(QColor(TEXT))
+                self.tbl_cons.setItem(i, col, it)
         self.tbl_cons.blockSignals(False)
 
     def _refresh_deliveries(self):
@@ -827,6 +898,9 @@ class MainWindow(QMainWindow):
 
 def launch() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
+    # Forzar paleta clara: en Windows 11 con tema oscuro, sin esto, las
+    # etiquetas y los campos se renderizan con texto blanco sobre blanco.
+    _apply_light_palette(app)
     window = MainWindow()
     window.show()
     return app.exec()
