@@ -105,6 +105,37 @@ def _resolve_tank_name(ws, product_key: str) -> str:
     return ""
 
 
+def _compute_derived(info: dict) -> dict:
+    """Calcula en Python los valores que normalmente serian formulas en el
+    Excel (columnas E, F, G, I, J). Asi escribimos numeros en vez de
+    formulas, y openpyxl con data_only=True puede leerlos.
+
+    Si en cambio dejaramos la formula '=SUM(L:N)' sin valor cacheado, al
+    re-leer el archivo openpyxl devuelve None y la app interpreta
+    Transactions = 0, perdiendo informacion. Eso es exactamente lo que
+    estaba pasando con S5CFDM60 / Tellus S3M46 al recargar.
+    """
+    opening = float(info.get("opening", 0) or 0)
+    inflow = float(info.get("inflow", 0) or 0)
+    closing = float(info.get("closing", 0) or 0)
+    to_eq = float(info.get("to_equipment", 0) or 0)
+    other = float(info.get("other_dispenses", 0) or 0)
+    trans_out = float(info.get("transfers_out", 0) or 0)
+
+    transactions = to_eq + other + trans_out             # E = SUM(L:N)
+    calc_stock = opening + inflow - transactions          # F = C+D-E
+    net_change = closing - opening                        # G = H-C
+    variance = closing - calc_stock                       # I = H-F
+    pct = (variance / transactions) if transactions else 0.0  # J = I/E
+    return {
+        "transactions": transactions,
+        "calc_stock": calc_stock,
+        "net_change": net_change,
+        "variance": variance,
+        "pct": pct,
+    }
+
+
 def _copy_row_template(ws, source_row: int, target_row: int,
                        max_col: int = 16) -> None:
     """Clona formulas (traducidas) y estilos del row fuente al row destino.
@@ -179,13 +210,25 @@ def write_pdf_data(excel_path: str, product_key: str,
             _copy_row_template(ws, source_row, target_row)
         action = "inserted"
 
-    # Escribir valores (las formulas E, F, G, I, J ya fueron clonadas).
+    # Escribir TODOS los valores como numeros (incluyendo los que en el
+    # Excel original eran formulas). Asi data_only=True puede leerlos al
+    # recargar — antes las formulas devolvian None y la app mostraba
+    # Transactions = 0 incorrectamente.
+    derived = _compute_derived(info)
     ws.cell(row=target_row, column=_COL_DATE,
             value=datetime.datetime.combine(period_end, datetime.time()))
     ws.cell(row=target_row, column=_COL_SITE, value=tank_name)
     ws.cell(row=target_row, column=_COL_OPENING, value=info["opening"])
     ws.cell(row=target_row, column=_COL_DELIVERIES, value=info["inflow"])
+    ws.cell(row=target_row, column=_COL_TRANSACTIONS,
+            value=derived["transactions"])
+    ws.cell(row=target_row, column=_COL_CALC_STOCK,
+            value=derived["calc_stock"])
+    ws.cell(row=target_row, column=_COL_NET_CHANGE,
+            value=derived["net_change"])
     ws.cell(row=target_row, column=_COL_CLOSING, value=info["closing"])
+    ws.cell(row=target_row, column=_COL_VARIANCE, value=derived["variance"])
+    ws.cell(row=target_row, column=_COL_PCT, value=derived["pct"])
     ws.cell(row=target_row, column=_COL_TO_EQUIPMENT,
             value=info["to_equipment"])
     ws.cell(row=target_row, column=_COL_OTHER, value=info["other_dispenses"])
@@ -237,6 +280,7 @@ def write_multiple(excel_path: str, items: list) -> tuple:
                     _copy_row_template(ws, source_row, target_row)
                 action = "inserted"
 
+            derived = _compute_derived(info)
             ws.cell(row=target_row, column=_COL_DATE,
                     value=datetime.datetime.combine(
                         period_end, datetime.time()))
@@ -245,8 +289,18 @@ def write_multiple(excel_path: str, items: list) -> tuple:
                     value=info["opening"])
             ws.cell(row=target_row, column=_COL_DELIVERIES,
                     value=info["inflow"])
+            ws.cell(row=target_row, column=_COL_TRANSACTIONS,
+                    value=derived["transactions"])
+            ws.cell(row=target_row, column=_COL_CALC_STOCK,
+                    value=derived["calc_stock"])
+            ws.cell(row=target_row, column=_COL_NET_CHANGE,
+                    value=derived["net_change"])
             ws.cell(row=target_row, column=_COL_CLOSING,
                     value=info["closing"])
+            ws.cell(row=target_row, column=_COL_VARIANCE,
+                    value=derived["variance"])
+            ws.cell(row=target_row, column=_COL_PCT,
+                    value=derived["pct"])
             ws.cell(row=target_row, column=_COL_TO_EQUIPMENT,
                     value=info["to_equipment"])
             ws.cell(row=target_row, column=_COL_OTHER,

@@ -181,7 +181,18 @@ class HistoryStore:
                     rec.found = True
                     rec.opening += m._num(row[COL_OPENING])
                     rec.deliveries += m._num(row[COL_DELIVERIES])
-                    rec.transactions += m._num(row[COL_TRANSACTIONS])
+                    # Transactions en el Excel es la formula =SUM(L:N). Si
+                    # esa celda no tiene valor cacheado (caso comun cuando
+                    # el archivo no se guardo desde Excel, o cuando openpyxl
+                    # escribio la formula sin computarla), data_only=True
+                    # devuelve None. En ese caso, computamos en runtime el
+                    # mismo SUM(L,M,N).
+                    raw_trans = row[COL_TRANSACTIONS]
+                    if raw_trans is None:
+                        raw_trans = (m._num(row[COL_TO_EQUIPMENT])
+                                     + m._num(row[COL_OTHER])
+                                     + m._num(row[COL_TRANSFERS]))
+                    rec.transactions += m._num(raw_trans)
                     rec.closing += m._num(row[COL_CLOSING])
                     rec.to_equipment += m._num(row[COL_TO_EQUIPMENT])
                     rec.other += m._num(row[COL_OTHER])
