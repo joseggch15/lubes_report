@@ -32,6 +32,8 @@ from PySide6.QtWidgets import (
 
 import report_model as m
 import history
+import excel_writer
+import pdf_import
 import stock_trend
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -271,6 +273,8 @@ class MainWindow(QMainWindow):
         btn_hist.clicked.connect(self._on_load_history)
         btn_trend = QPushButton("Cargar tendencia de tanques (CSV)...")
         btn_trend.clicked.connect(self._on_load_stock_trend)
+        btn_pdf = QPushButton("Cargar PDF Veridapt...")
+        btn_pdf.clicked.connect(self._on_load_pdf)
         btn_in = QPushButton("Cargar Excel de entrada...")
         btn_in.clicked.connect(self._on_load_input)
         btn_blank = QPushButton("Crear Excel en blanco...")
@@ -279,6 +283,7 @@ class MainWindow(QMainWindow):
         self.lbl_files.setWordWrap(True)
         row1.addWidget(btn_hist)
         row1.addWidget(btn_trend)
+        row1.addWidget(btn_pdf)
         row1.addWidget(btn_in)
         row1.addWidget(btn_blank)
         row1.addWidget(self.lbl_files, stretch=1)
@@ -720,6 +725,198 @@ class MainWindow(QMainWindow):
             % total)
         self.statusBar().showMessage(
             "Tendencia de tanques cargada: %s" % os.path.basename(path))
+
+    def _on_load_pdf(self):
+        """Carga uno o varios PDFs de reconciliacion Veridapt y extrae
+        Opening, Closing, Inflow (deliveries), Outflow (transactions) y el
+        desglose de dispensing (To Equipment, Other Dispenses, Transfers out)
+        para cada producto reconocido.
+
+        Ademas, si el Excel historico esta cargado, escribe una fila nueva
+        (o actualiza la existente) en la hoja 'Recon <producto>' para que
+        la informacion del PDF quede registrada en el Excel.
+        """
+        if not pdf_import.is_available():
+            QMessageBox.critical(
+                self, "Libreria faltante",
+                "Se requiere la libreria 'pdfplumber' para leer PDFs.\n\n"
+                "Instale con:\n  pip install pdfplumber")
+            return
+
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Cargar PDF de reconciliacion Veridapt", "",
+            "PDF (*.pdf)")
+        if not paths:
+            return
+
+        self._collect_all()
+        try:
+            loaded, skipped = _run_with_progress(
+                self,
+                "Cargando PDFs Veridapt",
+                "Extrayendo datos de %d archivo(s) PDF..." % len(paths),
+                pdf_import.parse_multiple_pdfs, paths)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error",
+                                 "No se pudieron leer los PDFs:\n%s" % exc)
+            return
+
+        # ---------------------------------------------------------------
+        # 1) Aplicar los datos extraidos sobre la estructura en memoria
+        # ---------------------------------------------------------------
+        for key, info, _fname in loaded:
+            # Tabla consolidada: opening, deliveries, transactions, closing.
+            for row in self.data["consolidated"]:
+                if row["site"] == key:
+                    row["opening"] = round(info["opening"], 2)
+                    row["deliveries"] = round(info["inflow"], 2)
+                    row["transactions"] = round(info["outflow"], 2)
+                    row["closing"] = round(info["closing"], 2)
+                    break
+
+            # Producto: dispensing.
+            prod = self.data["products"].setdefault(key, {})
+            prod["disp_equipment"] = round(info["to_equipment"], 2)
+            prod["disp_other"] = round(info["other_dispenses"], 2)
+            prod["disp_transfers"] = round(info["transfers_out"], 2)
+
+        # Periodo: tomar del primer PDF cargado.
+        period_end_date = None
+        if loaded:
+            info0 = loaded[0][1]
+            if info0["period_start"] and info0["period_end"]:
+                try:
+                    from datetime import datetime as _dt
+                    start = _dt.strptime(info0["period_start"],
+                                         "%d/%m/%Y").date()
+                    end = _dt.strptime(info0["period_end"],
+                                       "%d/%m/%Y").date()
+                    self.data["period_full"] = m.format_period(start, end)
+                    self.data["cover_date"] = m.format_cover_date(end)
+                    period_end_date = end
+                except ValueError:
+                    pass
+
+        # ---------------------------------------------------------------
+        # 2) Escribir los datos al Excel historico (si esta cargado)
+        # ---------------------------------------------------------------
+        excel_results = []
+        excel_errors = []
+        excel_path = (self.history.source_path
+                      if self.history.is_loaded() else None)
+
+        if loaded and excel_path and period_end_date is not None:
+            items = [(k, period_end_date, i) for (k, i, _fn) in loaded]
+            try:
+                excel_results, excel_errors = _run_with_progress(
+                    self,
+                    "Escribiendo Excel historico",
+                    "Insertando filas en el Excel historico...",
+                    excel_writer.write_multiple, excel_path, items)
+            except Exception as exc:
+                excel_errors = [("(write)", str(exc))]
+
+            # Re-cargar el historico para que la fecha nueva aparezca en el
+            # combo "Semana disponible" y para que las tendencias se
+            # actualicen.
+            try:
+                _run_with_progress(
+                    self,
+                    "Recargando Excel historico",
+                    "Refrescando datos...",
+                    self.history.load, excel_path)
+                self._populate_date_combos()
+                idx = self.date_combo.findText(
+                    period_end_date.strftime("%d/%m/%Y"))
+                if idx >= 0:
+                    self.date_combo.setCurrentIndex(idx)
+                    pidx = self.product_date_combo.findText(
+                        period_end_date.strftime("%d/%m/%Y"))
+                    if pidx >= 0:
+                        self.product_date_combo.setCurrentIndex(pidx)
+            except Exception:
+                pass
+
+        self._refresh_all_from_data()
+
+        # ---------------------------------------------------------------
+        # 3) Mostrar resumen al usuario
+        # ---------------------------------------------------------------
+        msg = []
+        if loaded:
+            msg.append("Productos actualizados desde PDF:\n")
+            for key, info, fname in loaded:
+                msg.append(
+                    "  • %s  (Opening: %s,  Closing: %s,  "
+                    "Deliveries: %s,  Transactions: %s)\n"
+                    "       Dispensing → Equipment: %s,  Other: %s,  "
+                    "Transfers: %s\n"
+                    "       Archivo: %s" % (
+                        key,
+                        m.fmt_int(info["opening"]),
+                        m.fmt_int(info["closing"]),
+                        m.fmt_int(info["inflow"]),
+                        m.fmt_int(info["outflow"]),
+                        m.fmt_int(info["to_equipment"]),
+                        m.fmt_int(info["other_dispenses"]),
+                        m.fmt_int(info["transfers_out"]),
+                        fname))
+
+        if excel_results:
+            msg.append("\nFilas escritas en el Excel historico (%s):"
+                       % os.path.basename(excel_path))
+            for key, res in excel_results:
+                action = res["action"]
+                if action == "inserted":
+                    txt = "fila %d insertada" % res["row"]
+                elif action == "updated":
+                    txt = "fila %d actualizada" % res["row"]
+                elif action == "no_sheet":
+                    txt = "sin hoja 'Recon ...' para este producto (omitido)"
+                else:
+                    txt = action
+                msg.append("  • %s → hoja '%s', %s, Tank='%s'"
+                           % (key, res["sheet"] or "-", txt,
+                              res["tank"]))
+        elif loaded and not excel_path:
+            msg.append("\nNota: el Excel historico no esta cargado. "
+                       "Los datos solo se aplicaron en pantalla. "
+                       "Cargue el Excel historico antes de cargar los "
+                       "PDFs para que tambien queden guardados.")
+
+        if excel_errors:
+            msg.append("\nErrores al escribir el Excel:")
+            for key, reason in excel_errors:
+                msg.append("  • %s: %s" % (key, reason))
+
+        if skipped:
+            msg.append("\nArchivos ignorados:")
+            for fname, reason in skipped:
+                msg.append("  • %s: %s" % (fname, reason))
+
+        if loaded:
+            QMessageBox.information(
+                self, "PDF cargado", "\n".join(msg))
+        else:
+            QMessageBox.warning(
+                self, "Sin datos de lubricantes",
+                "\n".join(msg) if msg else
+                "No se encontraron productos de lubricantes en los PDFs "
+                "seleccionados.")
+
+        if excel_errors:
+            self.statusBar().showMessage(
+                "PDF Veridapt: %d producto(s) actualizado(s) en pantalla; "
+                "%d error(es) al escribir Excel." %
+                (len(loaded), len(excel_errors)))
+        elif excel_results:
+            self.statusBar().showMessage(
+                "PDF Veridapt: %d producto(s) actualizado(s) y escrito(s) "
+                "al Excel historico." % len(loaded))
+        else:
+            self.statusBar().showMessage(
+                "PDF Veridapt: %d producto(s) actualizado(s) (solo en "
+                "pantalla)." % len(loaded))
 
     def _on_fetch_week(self):
         if not self.history.is_loaded():
