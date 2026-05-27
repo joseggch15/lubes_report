@@ -119,16 +119,30 @@ def delete_paragraph(paragraph):
 def _rewrite_keep_format(paragraph, new_text):
     """Reemplaza todo el contenido del parrafo por `new_text`, conservando
     el formato del primer run (y forzando fuente Arial cuando el original
-    no tenia fuente explicita, para igualar el reporte hecho a mano)."""
+    no tenia fuente explicita, para igualar el reporte hecho a mano).
+
+    El color se toma del primer run que tenga uno explicito; asi se conserva
+    el azul corporativo (#215E99) de la fecha de la portada, aunque el
+    primer sub-run ('May') venga sin color y solo los siguientes ('18',
+    'th', ', 2026') lo traigan."""
     runs = paragraph.runs
     bold = italic = underline = None
     name = None
     size = None
+    color_rgb = None
     if runs:
         r0 = runs[0]
         bold, italic, underline = r0.bold, r0.italic, r0.underline
         name = r0.font.name
         size = r0.font.size
+        for r in runs:
+            try:
+                rgb = r.font.color.rgb
+            except Exception:
+                rgb = None
+            if rgb is not None:
+                color_rgb = rgb
+                break
     for child in list(paragraph._p):
         if child.tag in (qn("w:r"), qn("w:hyperlink")):
             paragraph._p.remove(child)
@@ -137,6 +151,8 @@ def _rewrite_keep_format(paragraph, new_text):
     run.font.name = name or DEFAULT_FONT
     if size is not None:
         run.font.size = size
+    if color_rgb is not None:
+        run.font.color.rgb = color_rgb
 
 
 def retag_period(paragraph):
@@ -205,7 +221,14 @@ def retag_textbox_dates(doc):
 
 
 def set_cell(cell, text):
-    cell.text = text
+    """Reemplaza el contenido de la celda por `text` preservando el formato
+    del primer run (Arial, tamano 21, color, etc.) tal como lo trae el
+    reporte hecho a mano. Usar `cell.text = text` borraria ese formato y la
+    fuente caeria al Calibri por defecto del estilo Normal."""
+    paragraphs = list(cell.paragraphs)
+    for p in paragraphs[1:]:
+        p._p.getparent().remove(p._p)
+    _rewrite_keep_format(paragraphs[0], text)
 
 
 def _clone_control_row(data_row, control_text):

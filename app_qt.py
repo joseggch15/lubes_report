@@ -16,7 +16,6 @@ Ejecutar:  python run.py
 """
 from __future__ import annotations
 
-import glob
 import os
 import sys
 import traceback
@@ -264,29 +263,73 @@ class MainWindow(QMainWindow):
     # Construccion de la interfaz
     # ====================================================================
 
+    def _build_load_button(self, text: str, slot, key):
+        """Crea un boton de carga con un pequeño indicador de estado debajo.
+        Si `key` es None, no se crea indicador (boton de accion pura, p.ej.
+        'Crear Excel en blanco')."""
+        col = QVBoxLayout()
+        col.setSpacing(2)
+        btn = QPushButton(text)
+        btn.clicked.connect(slot)
+        col.addWidget(btn)
+        if key is not None:
+            lbl = QLabel("(sin cargar)")
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet(
+                "color: %s; font-size: 11px; font-style: italic; "
+                "background: transparent;" % TEXT_MUTED)
+            self.status_labels[key] = lbl
+            col.addWidget(lbl)
+        else:
+            # Placeholder para alinear visualmente con los botones que si
+            # tienen indicador (mantiene la altura de las columnas).
+            spacer = QLabel(" ")
+            spacer.setStyleSheet("font-size: 11px; background: transparent;")
+            col.addWidget(spacer)
+        return col
+
+    def _set_loaded_status(self, key: str, text: str | None) -> None:
+        """Actualiza el indicador del boton `key`. `text=None` -> resetea a
+        '(sin cargar)' en gris; cualquier otro texto se muestra en verde
+        prefijado con un check."""
+        lbl = self.status_labels.get(key)
+        if lbl is None:
+            return
+        if text is None:
+            lbl.setText("(sin cargar)")
+            lbl.setStyleSheet(
+                "color: %s; font-size: 11px; font-style: italic; "
+                "background: transparent;" % TEXT_MUTED)
+            lbl.setToolTip("")
+        else:
+            lbl.setText("✓ " + text)
+            lbl.setStyleSheet(
+                "color: %s; font-size: 11px; font-weight: bold; "
+                "background: transparent;" % ACCENT)
+            lbl.setToolTip(text)
+
     def _build_controls(self) -> QWidget:
         box = QGroupBox("Datos y seleccion de fecha")
         outer = QVBoxLayout(box)
 
+        # Cada boton de carga lleva debajo un indicador con "(sin cargar)"
+        # en gris o "OK <archivo>" en verde, para que de un vistazo se vea
+        # que fuentes ya estan cargadas y cuales faltan.
+        self.status_labels = {}
+
         row1 = QHBoxLayout()
-        btn_hist = QPushButton("Cargar Excel historico...")
-        btn_hist.clicked.connect(self._on_load_history)
-        btn_trend = QPushButton("Cargar tendencia de tanques (CSV)...")
-        btn_trend.clicked.connect(self._on_load_stock_trend)
-        btn_pdf = QPushButton("Cargar PDF Veridapt...")
-        btn_pdf.clicked.connect(self._on_load_pdf)
-        btn_in = QPushButton("Cargar Excel de entrada...")
-        btn_in.clicked.connect(self._on_load_input)
-        btn_blank = QPushButton("Crear Excel en blanco...")
-        btn_blank.clicked.connect(self._on_create_blank)
-        self.lbl_files = QLabel("Ningun Excel cargado.")
-        self.lbl_files.setWordWrap(True)
-        row1.addWidget(btn_hist)
-        row1.addWidget(btn_trend)
-        row1.addWidget(btn_pdf)
-        row1.addWidget(btn_in)
-        row1.addWidget(btn_blank)
-        row1.addWidget(self.lbl_files, stretch=1)
+        row1.addLayout(self._build_load_button(
+            "Cargar Excel historico...", self._on_load_history, "historico"))
+        row1.addLayout(self._build_load_button(
+            "Cargar tendencia de tanques (CSV)...",
+            self._on_load_stock_trend, "trend"))
+        row1.addLayout(self._build_load_button(
+            "Cargar PDF Veridapt...", self._on_load_pdf, "pdf"))
+        row1.addLayout(self._build_load_button(
+            "Cargar Excel de entrada...", self._on_load_input, "input"))
+        row1.addLayout(self._build_load_button(
+            "Crear Excel en blanco...", self._on_create_blank, None))
+        row1.addStretch(1)
         outer.addLayout(row1)
 
         row2 = QHBoxLayout()
@@ -658,36 +701,12 @@ class MainWindow(QMainWindow):
                                 "datos reconocibles.")
             return
         self._populate_date_combos()
-        self.lbl_files.setText("Excel historico: %s   (%d semanas con datos)"
-                               % (os.path.basename(path), len(dates)))
+        self._set_loaded_status(
+            "historico",
+            "%s (%d semanas)" % (os.path.basename(path), len(dates)))
         self.statusBar().showMessage(
             "Historico cargado. Seleccione una semana y pulse "
             "'Traer datos de esta fecha'.")
-        # Auto-cargar el CSV de tendencia de tanques si esta en la misma
-        # carpeta (asi no hace falta acordarse del segundo boton).
-        self._auto_load_stock_trend(os.path.dirname(path))
-
-    def _auto_load_stock_trend(self, folder: str) -> None:
-        """Busca un 'stock_trend*.csv' en `folder` y lo carga silenciosamente.
-        Si hay varios, usa el mas reciente."""
-        candidates = glob.glob(os.path.join(folder, "stock_trend*.csv"))
-        if not candidates:
-            return
-        latest = max(candidates, key=os.path.getmtime)
-        try:
-            trends, safe = _run_with_progress(
-                self,
-                "Cargando tendencia de tanques",
-                "Leyendo CSV %s ..." % os.path.basename(latest),
-                stock_trend.load_tank_trends, latest)
-        except Exception:
-            return
-        if not trends:
-            return
-        self.data["tank_trends"] = trends
-        self.data["tank_safe_fill"] = safe
-        self.statusBar().showMessage(
-            "CSV de tanques autocargado: %s" % os.path.basename(latest))
 
     def _on_load_stock_trend(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -714,10 +733,9 @@ class MainWindow(QMainWindow):
         self.data["tank_trends"] = trends
         self.data["tank_safe_fill"] = safe
         total = sum(len(v) for v in trends.values())
-        self.lbl_files.setText(
-            "%s   |   Tendencia de tanques: %s (%d tanques)"
-            % (self.lbl_files.text().split("   |   ")[0],
-               os.path.basename(path), len(trends)))
+        self._set_loaded_status(
+            "trend",
+            "%s (%d tanques)" % (os.path.basename(path), len(trends)))
         QMessageBox.information(
             self, "Tendencia cargada",
             "Tendencia de tanques cargada (%d mediciones).\nLos Tank Logs "
@@ -907,6 +925,13 @@ class MainWindow(QMainWindow):
                 msg.append("  • %s: %s" % (fname, reason))
 
         if loaded:
+            # Indicador junto al boton: nombre del PDF si fue uno solo,
+            # cantidad si fueron varios.
+            if len(paths) == 1:
+                status_txt = os.path.basename(paths[0])
+            else:
+                status_txt = "%d PDFs cargados" % len(paths)
+            self._set_loaded_status("pdf", status_txt)
             QMessageBox.information(
                 self, "PDF cargado", "\n".join(msg))
         else:
@@ -1009,6 +1034,7 @@ class MainWindow(QMainWindow):
                 "Leyendo  %s ..." % os.path.basename(path),
                 m.load_excel, path)
             self._refresh_all_from_data()
+            self._set_loaded_status("input", os.path.basename(path))
             self.statusBar().showMessage("Datos cargados desde %s"
                                          % os.path.basename(path))
         except Exception as exc:
