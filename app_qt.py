@@ -16,6 +16,7 @@ Ejecutar:  python run.py
 """
 from __future__ import annotations
 
+import datetime
 import os
 import sys
 import traceback
@@ -34,6 +35,8 @@ import history
 import excel_writer
 import pdf_import
 import stock_trend
+import delivery_csv_import
+import weekly_variance
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_TEMPLATE = os.path.join(HERE, "plantilla_reporte.docx")
@@ -325,6 +328,9 @@ class MainWindow(QMainWindow):
             self._on_load_stock_trend, "trend"))
         row1.addLayout(self._build_load_button(
             "Cargar PDF Veridapt...", self._on_load_pdf, "pdf"))
+        row1.addLayout(self._build_load_button(
+            "Cargar Merian delivery CSV...",
+            self._on_load_delivery_csv, "delivery"))
         row1.addLayout(self._build_load_button(
             "Cargar Excel de entrada...", self._on_load_input, "input"))
         row1.addLayout(self._build_load_button(
@@ -955,6 +961,84 @@ class MainWindow(QMainWindow):
                 "PDF Veridapt: %d producto(s) actualizado(s) (solo en "
                 "pantalla)." % len(loaded))
 
+    def _on_load_delivery_csv(self):
+        """Carga un CSV 'Merian delivery transactions' y agrega las filas
+        nuevas a la hoja 'delivery_transaction_213_202312' del Excel
+        historico (deduplicando contra lo ya existente).  Luego recarga el
+        historico para que las entregas nuevas se vean al traer una
+        fecha."""
+        if not self.history.is_loaded():
+            QMessageBox.information(
+                self, "Sin historico",
+                "Primero cargue el Excel historico de reconciliacion.\n"
+                "Las filas del CSV se escriben sobre la hoja "
+                "'delivery_transaction_213_202312' de ese Excel.")
+            return
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Cargar Merian delivery transactions CSV", "",
+            "CSV (*.csv)")
+        if not path:
+            return
+
+        excel_path = self.history.source_path
+        try:
+            parsed = _run_with_progress(
+                self,
+                "Leyendo CSV de entregas",
+                "Parseando %s ..." % os.path.basename(path),
+                delivery_csv_import.parse_delivery_csv, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Error",
+                                 "No se pudo leer el CSV:\n%s" % exc)
+            return
+
+        if not parsed:
+            QMessageBox.warning(
+                self, "Sin transacciones reconocidas",
+                "El CSV no tiene filas con producto/tanque/volumen "
+                "reconocibles para los lubricantes del reporte.")
+            return
+
+        try:
+            summary = _run_with_progress(
+                self,
+                "Escribiendo Excel historico",
+                "Agregando filas a 'delivery_transaction_213_202312'...",
+                delivery_csv_import.append_to_excel, excel_path, parsed)
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Error",
+                "No se pudieron escribir las filas al Excel:\n%s" % exc)
+            return
+
+        # Recargar el historico para que las nuevas entregas aparezcan al
+        # traer cualquier semana afectada.
+        try:
+            _run_with_progress(
+                self,
+                "Recargando Excel historico",
+                "Refrescando datos...",
+                self.history.load, excel_path)
+            self._populate_date_combos()
+        except Exception:
+            pass
+
+        self._set_loaded_status(
+            "delivery",
+            "%s (+%d filas)" % (os.path.basename(path), summary["inserted"]))
+        QMessageBox.information(
+            self, "CSV de entregas cargado",
+            "Archivo: %s\nFilas en el CSV: %d\nInsertadas: %d\n"
+            "Saltadas por duplicado: %d\n\nEscrito en: %s\nHoja: %s"
+            % (os.path.basename(path), summary["total"],
+               summary["inserted"], summary["skipped"],
+               os.path.basename(excel_path),
+               delivery_csv_import.SHEET))
+        self.statusBar().showMessage(
+            "Merian delivery CSV: %d filas insertadas, %d duplicadas." %
+            (summary["inserted"], summary["skipped"]))
+
     def _on_fetch_week(self):
         if not self.history.is_loaded():
             QMessageBox.information(
@@ -1117,18 +1201,86 @@ class MainWindow(QMainWindow):
             data = self._collect_all()
             images = {fig: self.image_edits[fig].text().strip()
                       for fig in m.FIGURE_KEYS}
+
+            # Antes de generar el Word: escribir la fila de la semana actual
+            # en las hojas "WeeklyVariance ..." del Excel historico (si esta
+            # cargado), expandir el rango del grafico y recargar el historico
+            # para que el chart Recon (Figuras 10, 14, 16, 18) del Word
+            # incluya el punto nuevo.
+            wv_summary = None
+            if self.history.is_loaded():
+                day = self._period_end_day()
+                if day is not None:
+                    try:
+                        wv_summary = _run_with_progress(
+                            self,
+                            "Actualizando WeeklyVariance",
+                            "Escribiendo fila de la semana en las hojas "
+                            "WeeklyVariance y expandiendo el grafico...",
+                            weekly_variance.update_for_week,
+                            self.history.source_path, day, data)
+                        # Recargar historico y refrescar recon_trends para que
+                        # los graficos del reporte incluyan el nuevo punto.
+                        _run_with_progress(
+                            self,
+                            "Recargando Excel historico",
+                            "Refrescando datos...",
+                            self.history.load, self.history.source_path)
+                        data["recon_trends"] = {
+                            k: self.history.recon_trend(k, day)
+                            for k in history.TANK_LOG_PRODUCTS}
+                    except Exception as exc:
+                        QMessageBox.warning(
+                            self, "WeeklyVariance",
+                            "No se pudo actualizar las hojas "
+                            "WeeklyVariance:\n%s\n\nEl reporte se generara "
+                            "igual con la informacion previa." % exc)
+
             _run_with_progress(
                 self,
                 "Generando reporte",
                 "Generando graficos y armando el documento Word ...\n\n"
                 "Esto puede tardar varios segundos.",
                 m.generate_report, data, images, self.template_path, out)
-            QMessageBox.information(self, "Reporte generado",
-                                    "Reporte creado correctamente:\n%s" % out)
+
+            extra = ""
+            if wv_summary:
+                ins = sum(1 for v in wv_summary.values()
+                          if v.get("action") == "inserted")
+                upd = sum(1 for v in wv_summary.values()
+                          if v.get("action") == "updated")
+                if ins or upd:
+                    extra = ("\n\nWeeklyVariance: %d fila(s) insertada(s), "
+                             "%d actualizada(s)." % (ins, upd))
+            QMessageBox.information(
+                self, "Reporte generado",
+                "Reporte creado correctamente:\n%s%s" % (out, extra))
             self.statusBar().showMessage("Reporte generado: %s" % out)
         except Exception as exc:
             QMessageBox.critical(self, "Error al generar",
                                  "%s\n\n%s" % (exc, traceback.format_exc()))
+
+    def _period_end_day(self):
+        """Devuelve la fecha (date) del fin del periodo del reporte.
+
+        Prioriza la seleccion del combo 'Semana disponible'; si no hay,
+        parsea 'cover_date' (formato 'May 25th, 2026')."""
+        day = self.date_combo.currentData()
+        if isinstance(day, datetime.date):
+            return day
+        cover = (self.data.get("cover_date") or "").strip()
+        if not cover:
+            return None
+        import re as _re
+        mm = _re.match(r"(\w+)\s+(\d+)(?:st|nd|rd|th)?,?\s*(\d{4})", cover)
+        if not mm:
+            return None
+        month_name, dnum, year = mm.groups()
+        try:
+            month = m._MONTHS_EN.index(month_name) + 1
+            return datetime.date(int(year), month, int(dnum))
+        except (ValueError, IndexError):
+            return None
 
 
 def launch() -> int:

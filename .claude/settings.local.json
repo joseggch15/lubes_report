@@ -31,7 +31,8 @@
       "Bash(git commit --allow-empty -m ' *)",
       "Bash(\"C:/Users/newmo/AppData/Local/Microsoft/WindowsApps/python3.12.exe\" -c \"import sys; sys.path.insert\\(0, '.'\\); import app_qt; print\\('OK'\\)\")",
       "Bash(git push *)",
-      "Bash(python -c \"import app_qt; print\\('IMPORT OK'\\)\")"
+      "Bash(python -c \"import app_qt; print\\('IMPORT OK'\\)\")",
+      "Bash(ls /c/Users/newmo/Downloads/Merian* 2>&1)"
     ]
   }
 }
